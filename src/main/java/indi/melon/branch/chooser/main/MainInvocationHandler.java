@@ -7,7 +7,6 @@ import org.springframework.context.expression.MethodBasedEvaluationContext;
 import org.springframework.core.DefaultParameterNameDiscoverer;
 import org.springframework.core.annotation.AnnotationUtils;
 import org.springframework.expression.spel.standard.SpelExpressionParser;
-import org.springframework.util.StringUtils;
 
 import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Method;
@@ -21,19 +20,10 @@ public class MainInvocationHandler<T> implements InvocationHandler {
     private final Map<Method, Collection<BranchDefinition<T>>> branchMap = new HashMap<>();
     private final SpelExpressionParser spelExpressionParser = new SpelExpressionParser();
     private final Map<String, Object> contextVariable = Collections.emptyMap();
+    private final List<T> branchBeanList;
 
-    public MainInvocationHandler(Class<T> clazz, List<T> branchBeanList) {
-        Method[] methods = clazz.getMethods();
-        for (Method method : methods) {
-            Collection<BranchDefinition<T>> collection = branchMap.computeIfAbsent(method, ignore -> new TreeSet<>());
-            for (T branchBean : branchBeanList) {
-                if (check(branchBean)){
-                    BranchDefinition<T> definition = analyzeBranch(method, branchBean);
-                    collection.add(definition);
-                }
-            }
-        }
-
+    public MainInvocationHandler(List<T> branchBeanList) {
+        this.branchBeanList = branchBeanList;
     }
 
     private boolean check(T branchBean) {
@@ -42,12 +32,22 @@ public class MainInvocationHandler<T> implements InvocationHandler {
     }
 
     public Object invoke(Object proxy, Method method, Object[] args) throws Throwable {
-        Collection<BranchDefinition<T>> definitionCollection = branchMap.get(method);
+        Collection<BranchDefinition<T>> definitionCollection = branchMap.computeIfAbsent(method, ignore -> new TreeSet<>());
+        if (definitionCollection.isEmpty()){
+            for (T branchBean : branchBeanList) {
+                if (check(branchBean)){
+                    BranchDefinition<T> definition = analyzeBranch(method, branchBean);
+                    definitionCollection.add(definition);
+                }
+            }
+        }
+
         for (BranchDefinition<T> definition : definitionCollection) {
             if (isRightBranch(definition, method, args)){
                 return method.invoke(definition.getBranch(), args);
             }
         }
+
         return null;
     }
 
@@ -55,7 +55,7 @@ public class MainInvocationHandler<T> implements InvocationHandler {
     private boolean isRightBranch(BranchDefinition<T> definition, Method method, Object[] args){
         String guideBoard = definition.getGuideBoard();
 
-        if (!StringUtils.hasText(guideBoard)) {
+        if (guideBoard == null || guideBoard.isEmpty()) {
             return false;
         }
         if ("true".equalsIgnoreCase(guideBoard) || "false".equalsIgnoreCase(guideBoard)){
