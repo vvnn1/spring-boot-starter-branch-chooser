@@ -2,11 +2,14 @@ package indi.melon.branch.chooser.main;
 
 import indi.melon.branch.chooser.annotation.Branch;
 import indi.melon.branch.chooser.annotation.Guide;
-import indi.melon.branch.chooser.branch.BranchDefinition;
+import indi.melon.branch.chooser.branch.BranchRoad;
+import indi.melon.branch.chooser.configuration.BranchChooserContext;
+import org.springframework.context.expression.MapAccessor;
 import org.springframework.context.expression.MethodBasedEvaluationContext;
 import org.springframework.core.DefaultParameterNameDiscoverer;
 import org.springframework.core.annotation.AnnotationUtils;
 import org.springframework.expression.spel.standard.SpelExpressionParser;
+import org.springframework.util.ClassUtils;
 
 import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Method;
@@ -17,13 +20,16 @@ import java.util.*;
  * @since 2024/7/19 21:18
  */
 public class MainInvocationHandler<T> implements InvocationHandler {
-    private final Map<Method, Collection<BranchDefinition<T>>> branchMap = new HashMap<>();
-    private final SpelExpressionParser spelExpressionParser = new SpelExpressionParser();
-    private final Map<String, Object> contextVariable = Collections.emptyMap();
+    private final Map<Method, Collection<BranchRoad<T>>> branchRoadMap = new HashMap<>();
+    private static final SpelExpressionParser spelExpressionParser = new SpelExpressionParser();
     private final List<T> branchBeanList;
+    private final String beanName;
+    private final BranchChooserContext branchChooserContext;
 
-    public MainInvocationHandler(List<T> branchBeanList) {
+    public MainInvocationHandler(String beanName, List<T> branchBeanList, BranchChooserContext branchChooserContext) {
         this.branchBeanList = branchBeanList;
+        this.beanName = beanName;
+        this.branchChooserContext = branchChooserContext;
     }
 
     private boolean check(T branchBean) {
@@ -32,19 +38,26 @@ public class MainInvocationHandler<T> implements InvocationHandler {
     }
 
     public Object invoke(Object proxy, Method method, Object[] args) throws Throwable {
-        Collection<BranchDefinition<T>> definitionCollection = branchMap.computeIfAbsent(method, ignore -> new TreeSet<>());
-        if (definitionCollection.isEmpty()){
+        for (Method objMethod : Object.class.getMethods()) {
+            if (method.equals(objMethod)){
+                return method.invoke(this, args);
+            }
+        }
+
+
+        Collection<BranchRoad<T>> roadCollection = branchRoadMap.computeIfAbsent(method, ignore -> new TreeSet<>());
+        if (roadCollection.isEmpty()){
             for (T branchBean : branchBeanList) {
                 if (check(branchBean)){
-                    BranchDefinition<T> definition = analyzeBranch(method, branchBean);
-                    definitionCollection.add(definition);
+                    BranchRoad<T> road = analyzeBranch(method, branchBean);
+                    roadCollection.add(road);
                 }
             }
         }
 
-        for (BranchDefinition<T> definition : definitionCollection) {
-            if (isRightBranch(definition, method, args)){
-                return method.invoke(definition.getBranch(), args);
+        for (BranchRoad<T> road : roadCollection) {
+            if (isRightRoad(road, args)){
+                return road.invoke(args);
             }
         }
 
@@ -52,7 +65,7 @@ public class MainInvocationHandler<T> implements InvocationHandler {
     }
 
 
-    private boolean isRightBranch(BranchDefinition<T> definition, Method method, Object[] args){
+    private boolean isRightRoad(BranchRoad<T> definition, Object[] args){
         String guideBoard = definition.getGuideBoard();
 
         if (guideBoard == null || guideBoard.isEmpty()) {
@@ -64,7 +77,7 @@ public class MainInvocationHandler<T> implements InvocationHandler {
 
         MethodBasedEvaluationContext context = createMethodBasedEvaluationContext(
                 definition.getBranch(),
-                method,
+                definition.getMethod(),
                 args
         );
 
@@ -80,29 +93,42 @@ public class MainInvocationHandler<T> implements InvocationHandler {
                 arguments,
                 new DefaultParameterNameDiscoverer()
         );
-        evaluationContext.setVariables(contextVariable);
+
+        evaluationContext.addPropertyAccessor(new MapAccessor());
+
+        if (branchChooserContext != null){
+            evaluationContext.setVariables(Collections.singletonMap("ctx", branchChooserContext.getContext()));
+        }
+
         return evaluationContext;
     }
 
-    private BranchDefinition<T> analyzeBranch(Method method, T branchBean){
+    private BranchRoad<T> analyzeBranch(Method method, T branchBean){
+        Class<?> beanClass = branchBean.getClass();
+        method = ClassUtils.getMostSpecificMethod(method, beanClass);
+
         Guide guide = AnnotationUtils.findAnnotation(method, Guide.class);
         if (guide == null){
-            Class<?> beanClass = branchBean.getClass();
             guide = AnnotationUtils.findAnnotation(beanClass, Guide.class);
         }
 
         if (guide == null){
-            return BranchDefinition.neverChoose(branchBean, method);
+            return BranchRoad.neverChoose(branchBean, method);
         }
 
         String guideBoard = guide.value();
         int order = guide.order();
 
-        return new BranchDefinition<>(
+        return new BranchRoad<>(
                 guideBoard,
                 order,
                 branchBean,
                 method
         );
+    }
+
+    @Override
+    public String toString() {
+        return beanName;
     }
 }
